@@ -382,27 +382,7 @@ def click_select_complete() -> bool:
         log(f"선택완료 실패: {type(e).__name__}")
         return False
 
-def click_pay_button() -> bool:
-    xpath = (
-        '//button[contains(@class,"btn-100") and contains(@class,"fill-main") '
-        'and contains(., "결제하기") and not(@disabled)]'
-    )
-    try:
-        btn = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, xpath))
-        )
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block:'center'});", btn
-        )
-        time.sleep(0.3)
-        btn.click()
-        log("결제하기 클릭")
-        return True
-    except Exception as e:
-        log(f"결제하기 실패: {type(e).__name__}")
-        return False
-
- def click_second_pay_button(timeout: float = 12.0) -> bool:
+def click_second_pay_button(timeout: float = 12.0) -> bool:
     """좌석 후 첫 결제하기 다음, 같은 자리의 '결제하기' (c-white)."""
     xpaths = [
         '//button[contains(@class,"fill-main") and contains(@class,"c-white") and contains(., "결제하기")]',
@@ -755,43 +735,6 @@ def click_seat_pair(pair_label: str) -> bool:
             pass
         return False
     
-def dismiss_seat_popup_if_any(timeout: float = 2.0) -> None:
-    """장애인/우대 좌석 등 추가 확인 팝업이 있으면 확인 클릭."""
-    candidates = [
-        '//button[normalize-space()="확인"]',
-        '//button[normalize-space()="예"]',
-        '//button[contains(@class,"fill-main") and normalize-space()="확인"]',
-    ]
-    end = time.time() + timeout
-    while time.time() < end:
-        for xp in candidates:
-            try:
-                btns = driver.find_elements(By.XPATH, xp)
-                for b in btns:
-                    if b.is_displayed() and b.is_enabled():
-                        b.click()
-                        log("좌석 관련 팝업 확인 클릭")
-                        return
-            except Exception:
-                pass
-        time.sleep(0.2)
-    
-def click_select_complete() -> bool:
-    """좌석 선택 후 '선택완료' 버튼 클릭 (disabled 해제될 때까지 대기)."""
-    xpath = (
-        '//button[contains(@class,"btn-100") and contains(@class,"fill-main") '
-        'and normalize-space()="선택완료"]'
-    )
-    try:
-        btn = WebDriverWait(driver, 8).until(
-            EC.element_to_be_clickable((By.XPATH, xpath))
-        )
-        btn.click()
-        log("선택완료 클릭")
-        return True
-    except Exception as e:
-        log(f"선택완료 클릭 실패: {type(e).__name__}")
-        return False
 
 def click_pay_button() -> bool:
     """
@@ -841,54 +784,6 @@ def click_pay_button() -> bool:
         pass
     return False
     
-def auto_select_and_pay(targets, treat_as_preferential: bool = False) -> tuple:
-    """
-    targets: ['A17+A18'] 형식
-    treat_as_preferential=True → 클릭마다 확인 팝업 처리 (장애인/우대)
-    """
-    if not targets:
-        return False, "타겟 없음"
-
-    pair = targets[0] if isinstance(targets[0], str) else (
-        targets[0].get("seat", "") if isinstance(targets[0], dict) else str(targets[0])
-    )
-    # pairs 리스트가 ['A17+A18', ...] 인 경우
-    if isinstance(targets[0], str) and "+" in targets[0]:
-        pair = targets[0]
-    elif isinstance(targets[0], str):
-        pair = targets[0]
-
-    parts = [p.strip() for p in str(pair).split("+")]
-    first = parts[0]
-    second = parts[1] if len(parts) > 1 else None
-
-    if not click_seat_pair(first):
-        return False, f"{first} 클릭 실패 (매진/disabled/DOM)"
-
-    if treat_as_preferential:
-        dismiss_preferential_popup()
-    else:
-        dismiss_preferential_popup(timeout=1.0)
-
-    time.sleep(0.4)
-
-    if second and treat_as_preferential:
-        if click_seat_pair(second):
-            dismiss_preferential_popup()
-            time.sleep(0.3)
-        else:
-            log(f"{second} 추가 클릭 실패 — 이미 선택됐을 수 있음")
-
-    if not click_select_complete():
-        return False, f"{pair} 선택 후 '선택완료' 실패"
-
-    time.sleep(1.5)
-
-    if not click_pay_button():
-        return False, f"{pair} 선택완료 OK, '결제하기' 실패 (수동)"
-
-    return True, f"{pair} → 확인(필요시) → 선택완료 → 결제하기 성공"
-
 def select_people():
     """버튼으로 직접 부를 때 (감시 전 미리 눌러두는 용도)."""
     if driver is None:
