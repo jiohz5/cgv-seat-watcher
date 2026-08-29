@@ -297,14 +297,20 @@ def goto_booking():
 
 
 def open_seat_screen() -> bool:
-    """인원을 지정하고 좌석 화면까지 연다. 좌석 선택/결제는 사람이 직접 한다."""
     try:
-        click_when_ready(f'//button[@aria-label="{PEOPLE_COUNT} 선택"]',
-                         f"인원 {PEOPLE_COUNT}명", timeout=8)
-        click_when_ready('//button[normalize-space(text())="선택"]', "선택", timeout=8)
+        click_when_ready(
+            f'//button[@aria-label="{PEOPLE_COUNT} 선택"]',
+            f"인원 {PEOPLE_COUNT}명",
+            timeout=8,
+        )
+        click_when_ready(
+            '//button[normalize-space(text())="선택"]',
+            "선택",
+            timeout=8,
+        )
+        ...
         return True
-    except Exception as e:
-        log(f"인원/선택 단계 실패: {type(e).__name__} — 화면에서 직접 눌러주세요.")
+    except Exception:
         return False
 
 def click_seat_pair(pair_label: str) -> bool:
@@ -394,7 +400,177 @@ def click_pay_button() -> bool:
         return True
     except Exception as e:
         log(f"결제하기 실패: {type(e).__name__}")
-        return False    
+        return False
+
+ def click_second_pay_button(timeout: float = 12.0) -> bool:
+    """좌석 후 첫 결제하기 다음, 같은 자리의 '결제하기' (c-white)."""
+    xpaths = [
+        '//button[contains(@class,"fill-main") and contains(@class,"c-white") and contains(., "결제하기")]',
+        '//button[contains(@class,"btn-100") and contains(@class,"c-white") and normalize-space()="결제하기"]',
+        '//button[contains(@class,"fill-main") and contains(., "결제하기")]',
+    ]
+    end = time.time() + timeout
+    while time.time() < end:
+        for xp in xpaths:
+            try:
+                for btn in driver.find_elements(By.XPATH, xp):
+                    if not btn.is_displayed():
+                        continue
+                    if btn.get_attribute("disabled"):
+                        continue
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", btn
+                    )
+                    time.sleep(0.2)
+                    driver.execute_script("arguments[0].click();", btn)
+                    log("2차 결제하기 클릭")
+                    return True
+            except Exception:
+                pass
+        time.sleep(0.3)
+    log("2차 결제하기 실패")
+    return False
+
+
+def click_npay_button(timeout: float = 15.0) -> bool:
+    """Npay 이미지 버튼."""
+    xpaths = [
+        '//button[.//img[@alt="Npay"]]',
+        '//img[@alt="Npay"]/parent::button',
+        '//button[.//img[contains(@src,"cgv") and contains(@src,"Npay") or contains(@alt,"Npay")]]',
+    ]
+    end = time.time() + timeout
+    while time.time() < end:
+        for xp in xpaths:
+            try:
+                for el in driver.find_elements(By.XPATH, xp):
+                    btn = el if el.tag_name == "button" else el
+                    if not btn.is_displayed():
+                        continue
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", btn
+                    )
+                    time.sleep(0.2)
+                    driver.execute_script("arguments[0].click();", btn)
+                    log("Npay 버튼 클릭")
+                    return True
+            except Exception:
+                pass
+        time.sleep(0.3)
+    log("Npay 버튼 실패")
+    return False
+
+
+def click_agree_all_terms(timeout: float = 12.0) -> bool:
+    """전체 약관 동의하기 (label chkAll)."""
+    xpaths = [
+        '//label[@for="chkAll"]',
+        '//label[contains(@class,"chck-text") and contains(., "전체 약관")]',
+        '//label[contains(@class,"chck-icon")]',
+        '//input[@id="chkAll"]',
+    ]
+    end = time.time() + timeout
+    while time.time() < end:
+        for xp in xpaths:
+            try:
+                for el in driver.find_elements(By.XPATH, xp):
+                    if not el.is_displayed():
+                        continue
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", el
+                    )
+                    time.sleep(0.2)
+                    driver.execute_script("arguments[0].click();", el)
+                    log("전체 약관 동의 클릭")
+                    time.sleep(0.3)
+                    return True
+            except Exception:
+                pass
+        time.sleep(0.3)
+    log("전체 약관 동의 실패")
+    return False
+
+
+def click_amount_pay_button(timeout: float = 12.0) -> bool:
+    """{금액}원 결제하기 (btn-font2way 등)."""
+    xpaths = [
+        '//button[contains(@class,"btn-font2way") and contains(., "결제하기")]',
+        '//button[contains(@class,"fill-main") and contains(@class,"c-white") and contains(., "결제하기")]',
+        '//button[contains(@class,"fill-main") and contains(., "원") and contains(., "결제하기")]',
+    ]
+    end = time.time() + timeout
+    while time.time() < end:
+        for xp in xpaths:
+            try:
+                for btn in driver.find_elements(By.XPATH, xp):
+                    if not btn.is_displayed():
+                        continue
+                    if btn.get_attribute("disabled"):
+                        continue
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", btn
+                    )
+                    time.sleep(0.2)
+                    driver.execute_script("arguments[0].click();", btn)
+                    log("금액 결제하기 클릭")
+                    return True
+            except Exception:
+                pass
+        time.sleep(0.3)
+    log("금액 결제하기 실패")
+    return False
+
+
+def click_npay_agree_and_pay(timeout: float = 15.0) -> bool:
+    """네이버페이 '동의하고 결제하기'."""
+    xpaths = [
+        '//button[contains(., "동의하고 결제하기")]',
+        '//button[contains(@class,"ButtonBox-module") and contains(., "동의하고 결제하기")]',
+        '//button[contains(@class,"color-npayGreen") or contains(@class,"npayGreen")]',
+    ]
+    end = time.time() + timeout
+    while time.time() < end:
+        for xp in xpaths:
+            try:
+                for btn in driver.find_elements(By.XPATH, xp):
+                    if not btn.is_displayed():
+                        continue
+                    if btn.get_attribute("disabled"):
+                        continue
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", btn
+                    )
+                    time.sleep(0.2)
+                    driver.execute_script("arguments[0].click();", btn)
+                    log("동의하고 결제하기 클릭")
+                    return True
+            except Exception:
+                pass
+        time.sleep(0.3)
+    log("동의하고 결제하기 실패")
+    return False
+
+
+def wait_secure_keyboard(timeout: float = 20.0) -> bool:
+    """6자리 보안키패드 등장 대기. 입력은 사람이 함."""
+    xpaths = [
+        '//div[contains(@class,"SecureKeyboard")]',
+        '//div[@id="keyboard"]',
+        '//h2[contains(., "입력 키패드")]',
+    ]
+    end = time.time() + timeout
+    while time.time() < end:
+        for xp in xpaths:
+            try:
+                els = driver.find_elements(By.XPATH, xp)
+                if any(e.is_displayed() for e in els):
+                    log("보안키패드 표시됨 — 6자리는 직접 입력하세요")
+                    return True
+            except Exception:
+                pass
+        time.sleep(0.3)
+    log("보안키패드 대기 타임아웃")
+    return False   
 
 def auto_select_and_pay(targets, treat_as_preferential: bool = False) -> tuple:
     """
@@ -439,23 +615,75 @@ def auto_select_and_pay(targets, treat_as_preferential: bool = False) -> tuple:
     if not click_pay_button():
         return False, f"{pair} 선택완료 OK, '결제하기' 실패 (수동)"
 
-    return True, f"{pair} → 확인(필요시) → 선택완료 → 결제하기 성공"
+    time.sleep(1.0)
 
-def test_auto_select_now():
+    # --- 결제 화면 이후 ---
+    if not click_second_pay_button():
+        return False, "1차 결제하기 OK, 2차 결제하기 실패 (수동)"
+
+    time.sleep(1.2)
+
+    if not click_npay_button():
+        return False, "2차 결제 OK, Npay 클릭 실패 (수동)"
+
+    time.sleep(1.0)
+
+    if not click_agree_all_terms():
+        return False, "Npay OK, 전체약관 동의 실패 (수동)"
+
+    time.sleep(0.5)
+
+    if not click_amount_pay_button():
+        return False, "약관 OK, 금액 결제하기 실패 (수동)"
+
+    time.sleep(1.0)
+
+    if not click_npay_agree_and_pay():
+        return False, "금액 결제 OK, 동의하고 결제하기 실패 (수동)"
+
+    # 6자리: 자동 입력 안 함
+    if wait_secure_keyboard():
+        try:
+            notify_phone(
+                "CGV 6자리 입력 필요",
+                f"{pair}까지 자동 완료. 보안키패드에서 비밀번호 6자리를 직접 입력하세요.",
+            )
+        except Exception:
+            pass
+        bring_browser_front()
+        return True, f"{pair} → 결제 직전 OK. 6자리는 직접 입력"
+    return True, f"{pair} → 동의하고 결제까지 OK (키패드 미감지, 화면 확인)"
+
+def test_full_flow_like_watch():
     """
-    좌석 맵이 이미 열린 상태에서만 사용.
-    A17/A18 장애인(우대)석 기준으로 테스트.
+    감시 중 타겟 2연석 발견 시와 같은 행위 전체 테스트.
+    인원 2 선택 → 선택 → (좌석맵) → A17+A18 → 확인 팝업
+    → 선택완료 → 결제하기
     """
     def task():
         if driver is None:
-            log("브라우저 없음 — 로그인·예매·인원·좌석맵까지 먼저 여세요.")
+            log("브라우저 없음 — 로그인·예매창(회차)까지 먼저 여세요.")
             return
-        # ▼ 테스트 타겟 (장애인석)
-        test_targets = ["A17+A18"]
-        log(f"[테스트] 시작 — {test_targets} (우대/장애인석 모드)")
+
+        test_targets = ["A17+A18"]  # 우대/장애인 2연석 테스트
+        log(f"[테스트] 감시 발견 후 전체 흐름 시작 — {test_targets}")
+
+        # ① 인원 2명 + 선택 → 좌석 맵 (기존 함수 재사용)
+        if not open_seat_screen():
+            msg = "인원 선택/좌석 화면 진입 실패"
+            log(f"[테스트] 실패 — {msg}")
+            try:
+                notify_phone("CGV 테스트 실패", msg)
+            except Exception:
+                pass
+            return
+
+        time.sleep(1.0)  # 좌석 맵 렌더 대기
+
+        # ② 좌석 클릭 ~ 결제하기 (우대석 팝업 포함)
         ok, detail = auto_select_and_pay(
             test_targets,
-            treat_as_preferential=True,  # A17/A18 테스트 필수
+            treat_as_preferential=True,
         )
         log(f"[테스트] {'성공' if ok else '실패'} — {detail}")
         try:
@@ -464,9 +692,6 @@ def test_auto_select_now():
             pass
 
     threading.Thread(target=task, daemon=True).start()
-
-
-
 def click_seat_pair(pair_label: str) -> bool:
     """
     'A17+A18' → 첫 칸 클릭.
@@ -569,25 +794,52 @@ def click_select_complete() -> bool:
         return False
 
 def click_pay_button() -> bool:
-    """금액은 회차마다 다르므로 '결제하기' 텍스트로 찾음."""
-    xpath = (
-        '//button[contains(@class,"btn-100") and contains(@class,"fill-main") '
-        'and contains(., "결제하기") and not(@disabled)]'
-    )
-    try:
-        btn = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, xpath))
-        )
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block:'center'});", btn
-        )
+    """
+    하단 고정바(.botFix)의 '결제하기' 버튼.
+    금액(34,000원 등)은 회차마다 다르므로 텍스트로만 찾음.
+    """
+    # 여러 후보 (DOM 변형 대비)
+    xpaths = [
+        '//div[contains(@class,"botFix")]//button[contains(., "결제하기")]',
+        '//div[contains(@class,"double-btn-wrap")]//button[contains(., "결제하기")]',
+        '//button[contains(@class,"fill-main") and contains(., "결제하기")]',
+    ]
+    end = time.time() + 15
+    last_err = ""
+    while time.time() < end:
+        for xp in xpaths:
+            try:
+                btns = driver.find_elements(By.XPATH, xp)
+                for btn in btns:
+                    if not btn.is_displayed():
+                        continue
+                    if btn.get_attribute("disabled"):
+                        continue
+                    # 하단 바로 스크롤 + JS 클릭
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", btn
+                    )
+                    time.sleep(0.25)
+                    driver.execute_script("arguments[0].click();", btn)
+                    log("결제하기 클릭(JS)")
+                    return True
+            except Exception as e:
+                last_err = type(e).__name__
         time.sleep(0.3)
-        btn.click()
-        log("결제하기 클릭")
-        return True
-    except Exception as e:
-        log(f"결제하기 클릭 실패: {type(e).__name__}")
-        return False
+
+    log(f"결제하기 클릭 실패: TimeoutException ({last_err})")
+    # 디버그: 화면에 버튼 텍스트가 보이는지
+    try:
+        raw = driver.find_elements(
+            By.XPATH, '//button[contains(@class,"fill-main")]'
+        )
+        for b in raw:
+            t = (b.text or "").replace("\n", " ").strip()
+            if t:
+                log(f"  fill-main 버튼 발견: '{t}' disabled={b.get_attribute('disabled')}")
+    except Exception:
+        pass
+    return False
     
 def auto_select_and_pay(targets, treat_as_preferential: bool = False) -> tuple:
     """
@@ -630,7 +882,7 @@ def auto_select_and_pay(targets, treat_as_preferential: bool = False) -> tuple:
     if not click_select_complete():
         return False, f"{pair} 선택 후 '선택완료' 실패"
 
-    time.sleep(0.8)
+    time.sleep(1.5)
 
     if not click_pay_button():
         return False, f"{pair} 선택완료 OK, '결제하기' 실패 (수동)"
@@ -1221,7 +1473,7 @@ btn_test_auto = tk.Button(
     root,
     text="좌석맵 자동선택 테스트 (A17)",
     width=28,
-    command=test_auto_select_now,
+    command=test_full_flow_like_watch,
 )
 btn_test_auto.pack(pady=5)
 
