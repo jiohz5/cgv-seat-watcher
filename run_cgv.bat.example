@@ -1,0 +1,14 @@
+@echo off
+chcp 65001 > nul
+REM ─────────────────────────────────────────────
+REM  이 파일을 run_cgv.bat 으로 복사한 뒤 값을 채우세요.
+REM  run_cgv.bat 은 .gitignore 에 있어 커밋되지 않습니다.
+REM ─────────────────────────────────────────────
+
+set CGV_TG_TOKEN=여기에_봇토큰_붙여넣기
+set CGV_TG_CHAT_ID=여기에_chat_id_붙여넣기
+
+cd /d "%~dp0"
+python cgv_gui.py
+
+pause

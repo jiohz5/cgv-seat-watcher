@@ -1,0 +1,6 @@
+# 로그인 세션과 봇 토큰이 들어있으므로 절대 커밋하지 않는다
+session_cookies.json
+run_cgv.bat
+edge_profile/
+driver/
+__pycache__/
