@@ -7,6 +7,7 @@ import urllib.request
 import tkinter as tk
 from tkinter import messagebox
 
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium import webdriver
 from selenium.webdriver.edge.service import Service
 from selenium.webdriver.common.by import By
@@ -467,7 +468,10 @@ def test_auto_select_now():
 
 
 def click_seat_pair(pair_label: str) -> bool:
-    """'F12+F13' → 첫 좌석(F12) 버튼 클릭. 2연석은 한 번에 잡히는 경우 가정."""
+    """
+    'A17+A18' → 첫 칸 클릭.
+    ElementClickInterceptedException 대비: JS 클릭 사용.
+    """
     first = pair_label.split("+")[0].strip()
     xpath = (
         f'//button[contains(@class,"seatMap_seatNumber") '
@@ -477,17 +481,53 @@ def click_seat_pair(pair_label: str) -> bool:
     )
     try:
         el = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.XPATH, xpath))
+            EC.presence_of_element_located((By.XPATH, xpath))
         )
+        # 화면 중앙으로 스크롤
         driver.execute_script(
-            "arguments[0].scrollIntoView({block:'center'});", el
+            "arguments[0].scrollIntoView({block:'center', inline:'center'});", el
         )
-        time.sleep(0.2)
-        el.click()
-        log(f"좌석 클릭: {first} ({pair_label})")
+        time.sleep(0.35)
+
+        # 가리는 오버레이/헤더가 있으면 pointer-events 잠시 끄기 (선택)
+        driver.execute_script("""
+            var sels = [
+              '[class*="header"]', '[class*="Header"]',
+              '[class*="dim"]', '[class*="Dim"]',
+              '[class*="loading"]', '[class*="Loading"]',
+              '[class*="toast"]', '[class*="modal"]'
+            ];
+            sels.forEach(function(s){
+              document.querySelectorAll(s).forEach(function(n){
+                if (n && n.style) n.setAttribute('data-cgv-pe', n.style.pointerEvents || '');
+              });
+            });
+        """)
+
+        # 네이티브 click 대신 JS click (Intercepted 회피)
+        driver.execute_script("arguments[0].click();", el)
+        log(f"좌석 클릭(JS): {first} ({pair_label})")
+        time.sleep(0.3)
         return True
     except Exception as e:
-        log(f"좌석 클릭 실패 ({first}): {type(e).__name__}")
+        log(f"좌석 클릭 실패 ({first}): {type(e).__name__}: {e}")
+        # 디버그: 버튼이 아예 없는건지, disabled인지
+        try:
+            any_btn = driver.find_elements(
+                By.XPATH,
+                f'//button[contains(@class,"seatMap_seatNumber")]'
+                f'//span[normalize-space()="{first}"]/parent::button'
+            )
+            if not any_btn:
+                log(f"  → DOM에 {first} 버튼 없음")
+            else:
+                b = any_btn[0]
+                log(
+                    f"  → 존재함 disabled={b.get_attribute('disabled')}, "
+                    f"class={b.get_attribute('class')[:80]}"
+                )
+        except Exception:
+            pass
         return False
     
 def dismiss_seat_popup_if_any(timeout: float = 2.0) -> None:
@@ -549,51 +589,53 @@ def click_pay_button() -> bool:
         log(f"결제하기 클릭 실패: {type(e).__name__}")
         return False
     
-def auto_select_and_pay(targets) -> tuple:
+def auto_select_and_pay(targets, treat_as_preferential: bool = False) -> tuple:
     """
-    targets: pairs ['F12+F13', ...] 또는 seats 리스트
-    반환: (성공여부: bool, 상세메시지: str)
+    targets: ['A17+A18'] 형식
+    treat_as_preferential=True → 클릭마다 확인 팝업 처리 (장애인/우대)
     """
     if not targets:
-        return False, "타겟 좌석 없음"
+        return False, "타겟 없음"
 
-    clicked = None
+    pair = targets[0] if isinstance(targets[0], str) else (
+        targets[0].get("seat", "") if isinstance(targets[0], dict) else str(targets[0])
+    )
+    # pairs 리스트가 ['A17+A18', ...] 인 경우
+    if isinstance(targets[0], str) and "+" in targets[0]:
+        pair = targets[0]
+    elif isinstance(targets[0], str):
+        pair = targets[0]
 
-    if REQUIRE_PAIR:
-        for p in targets:
-            if click_seat_pair(p):
-                clicked = p
-                break
-            # fallback: 짝 좌석을 각각 클릭
-            parts = p.split("+")
-            if len(parts) == 2:
-                ok1 = click_seat_pair(parts[0].strip())
-                ok2 = click_seat_pair(parts[1].strip())
-                if ok1 or ok2:
-                    clicked = p
-                    break
+    parts = [p.strip() for p in str(pair).split("+")]
+    first = parts[0]
+    second = parts[1] if len(parts) > 1 else None
+
+    if not click_seat_pair(first):
+        return False, f"{first} 클릭 실패 (매진/disabled/DOM)"
+
+    if treat_as_preferential:
+        dismiss_preferential_popup()
     else:
-        # 단석: seat 라벨 또는 dict
-        for s in targets:
-            label = s["seat"] if isinstance(s, dict) else str(s)
-            if click_seat_pair(label):  # split('+')[0]만 쓰이므로 단석도 동작
-                clicked = label
-                break
+        dismiss_preferential_popup(timeout=1.0)
 
-    if not clicked:
-        return False, "좌석 버튼 클릭 실패 (이미 매진이거나 DOM 불일치)"
+    time.sleep(0.4)
 
-    time.sleep(0.5)
+    if second and treat_as_preferential:
+        if click_seat_pair(second):
+            dismiss_preferential_popup()
+            time.sleep(0.3)
+        else:
+            log(f"{second} 추가 클릭 실패 — 이미 선택됐을 수 있음")
 
     if not click_select_complete():
-        return False, f"{clicked} 선택 후 '선택완료' 실패 (수동 진행)"
+        return False, f"{pair} 선택 후 '선택완료' 실패"
 
     time.sleep(0.8)
 
     if not click_pay_button():
-        return False, f"{clicked} 선택완료 OK, '결제하기' 실패 (수동 진행)"
+        return False, f"{pair} 선택완료 OK, '결제하기' 실패 (수동)"
 
-    return True, f"{clicked} → 선택완료 → 결제하기 진입 성공"
+    return True, f"{pair} → 확인(필요시) → 선택완료 → 결제하기 성공"
 
 def select_people():
     """버튼으로 직접 부를 때 (감시 전 미리 눌러두는 용도)."""
