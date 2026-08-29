@@ -306,6 +306,294 @@ def open_seat_screen() -> bool:
         log(f"인원/선택 단계 실패: {type(e).__name__} — 화면에서 직접 눌러주세요.")
         return False
 
+def click_seat_pair(pair_label: str) -> bool:
+    """
+    'A17+A18' → 첫 칸(A17) 클릭.
+    일반석: 한 번에 2연석 선택될 수 있음.
+    장애인/우대석: 클릭 후 확인 팝업이 뜸 (다음 함수에서 처리).
+    """
+    first = pair_label.split("+")[0].strip()
+    xpath = (
+        f'//button[contains(@class,"seatMap_seatNumber") '
+        f'and not(@disabled) '
+        f'and not(contains(@class,"Disabled"))]'
+        f'//span[normalize-space()="{first}"]/parent::button'
+    )
+    try:
+        el = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, xpath))
+        )
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});", el
+        )
+        time.sleep(0.2)
+        el.click()
+        log(f"좌석 클릭: {first} ({pair_label})")
+        return True
+    except Exception as e:
+        log(f"좌석 클릭 실패 ({first}): {type(e).__name__}")
+        return False
+
+def dismiss_preferential_popup(timeout: float = 3.0) -> bool:
+    """
+    장애인/우대석 클릭 시 뜨는 팝업의 '확인' 버튼.
+    일반석은 팝업이 없으면 False만 반환하고 넘어가면 됨.
+    """
+    xpath = (
+        '//button[contains(@class,"btn-100") and contains(@class,"fill-main") '
+        'and normalize-space()="확인"]'
+    )
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            btns = driver.find_elements(By.XPATH, xpath)
+            for b in btns:
+                if b.is_displayed() and b.is_enabled():
+                    b.click()
+                    log("장애인/우대석 팝업 '확인' 클릭")
+                    time.sleep(0.3)
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.2)
+    log("확인 팝업 없음 (일반석이거나 이미 닫힘)")
+    return False
+
+def click_select_complete() -> bool:
+    xpath = (
+        '//button[contains(@class,"btn-100") and contains(@class,"fill-main") '
+        'and normalize-space()="선택완료"]'
+    )
+    try:
+        btn = WebDriverWait(driver, 8).until(
+            EC.element_to_be_clickable((By.XPATH, xpath))
+        )
+        btn.click()
+        log("선택완료 클릭")
+        return True
+    except Exception as e:
+        log(f"선택완료 실패: {type(e).__name__}")
+        return False
+
+def click_pay_button() -> bool:
+    xpath = (
+        '//button[contains(@class,"btn-100") and contains(@class,"fill-main") '
+        'and contains(., "결제하기") and not(@disabled)]'
+    )
+    try:
+        btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, xpath))
+        )
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});", btn
+        )
+        time.sleep(0.3)
+        btn.click()
+        log("결제하기 클릭")
+        return True
+    except Exception as e:
+        log(f"결제하기 실패: {type(e).__name__}")
+        return False    
+
+def auto_select_and_pay(targets, treat_as_preferential: bool = False) -> tuple:
+    """
+    targets: ['A17+A18'] 형식
+    treat_as_preferential=True → 클릭마다 확인 팝업 대기 (장애인/우대 테스트용)
+    """
+    if not targets:
+        return False, "타겟 없음"
+
+    pair = targets[0]
+    parts = [p.strip() for p in pair.split("+")]
+    first = parts[0]
+    second = parts[1] if len(parts) > 1 else None
+
+    # 1) 첫 좌석
+    if not click_seat_pair(first):
+        return False, f"{first} 클릭 실패 (매진/disabled/DOM)"
+
+    if treat_as_preferential:
+        dismiss_preferential_popup()
+    else:
+        # 일반석: 팝업 없을 수 있음. 짧게만 시도
+        dismiss_preferential_popup(timeout=1.0)
+
+    time.sleep(0.4)
+
+    # 2) 장애인석은 두 번째 칸도 눌러야 할 수 있음
+    if second and treat_as_preferential:
+        if click_seat_pair(second):
+            dismiss_preferential_popup()
+            time.sleep(0.3)
+        else:
+            log(f"{second} 추가 클릭 실패 — 이미 짝 선택됐을 수 있음")
+
+    # 3) 선택완료
+    if not click_select_complete():
+        return False, f"{pair} 선택 후 '선택완료' 실패"
+
+    time.sleep(0.8)
+
+    # 4) 결제하기
+    if not click_pay_button():
+        return False, f"{pair} 선택완료 OK, '결제하기' 실패 (수동)"
+
+    return True, f"{pair} → 확인(필요시) → 선택완료 → 결제하기 성공"
+
+def test_auto_select_now():
+    """
+    좌석 맵이 이미 열린 상태에서만 사용.
+    A17/A18 장애인(우대)석 기준으로 테스트.
+    """
+    def task():
+        if driver is None:
+            log("브라우저 없음 — 로그인·예매·인원·좌석맵까지 먼저 여세요.")
+            return
+        # ▼ 테스트 타겟 (장애인석)
+        test_targets = ["A17+A18"]
+        log(f"[테스트] 시작 — {test_targets} (우대/장애인석 모드)")
+        ok, detail = auto_select_and_pay(
+            test_targets,
+            treat_as_preferential=True,  # A17/A18 테스트 필수
+        )
+        log(f"[테스트] {'성공' if ok else '실패'} — {detail}")
+        try:
+            notify_phone("CGV 테스트", detail)
+        except Exception:
+            pass
+
+    threading.Thread(target=task, daemon=True).start()
+
+
+
+def click_seat_pair(pair_label: str) -> bool:
+    """'F12+F13' → 첫 좌석(F12) 버튼 클릭. 2연석은 한 번에 잡히는 경우 가정."""
+    first = pair_label.split("+")[0].strip()
+    xpath = (
+        f'//button[contains(@class,"seatMap_seatNumber") '
+        f'and not(@disabled) '
+        f'and not(contains(@class,"Disabled"))]'
+        f'//span[normalize-space()="{first}"]/parent::button'
+    )
+    try:
+        el = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, xpath))
+        )
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});", el
+        )
+        time.sleep(0.2)
+        el.click()
+        log(f"좌석 클릭: {first} ({pair_label})")
+        return True
+    except Exception as e:
+        log(f"좌석 클릭 실패 ({first}): {type(e).__name__}")
+        return False
+    
+def dismiss_seat_popup_if_any(timeout: float = 2.0) -> None:
+    """장애인/우대 좌석 등 추가 확인 팝업이 있으면 확인 클릭."""
+    candidates = [
+        '//button[normalize-space()="확인"]',
+        '//button[normalize-space()="예"]',
+        '//button[contains(@class,"fill-main") and normalize-space()="확인"]',
+    ]
+    end = time.time() + timeout
+    while time.time() < end:
+        for xp in candidates:
+            try:
+                btns = driver.find_elements(By.XPATH, xp)
+                for b in btns:
+                    if b.is_displayed() and b.is_enabled():
+                        b.click()
+                        log("좌석 관련 팝업 확인 클릭")
+                        return
+            except Exception:
+                pass
+        time.sleep(0.2)
+    
+def click_select_complete() -> bool:
+    """좌석 선택 후 '선택완료' 버튼 클릭 (disabled 해제될 때까지 대기)."""
+    xpath = (
+        '//button[contains(@class,"btn-100") and contains(@class,"fill-main") '
+        'and normalize-space()="선택완료"]'
+    )
+    try:
+        btn = WebDriverWait(driver, 8).until(
+            EC.element_to_be_clickable((By.XPATH, xpath))
+        )
+        btn.click()
+        log("선택완료 클릭")
+        return True
+    except Exception as e:
+        log(f"선택완료 클릭 실패: {type(e).__name__}")
+        return False
+
+def click_pay_button() -> bool:
+    """금액은 회차마다 다르므로 '결제하기' 텍스트로 찾음."""
+    xpath = (
+        '//button[contains(@class,"btn-100") and contains(@class,"fill-main") '
+        'and contains(., "결제하기") and not(@disabled)]'
+    )
+    try:
+        btn = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, xpath))
+        )
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});", btn
+        )
+        time.sleep(0.3)
+        btn.click()
+        log("결제하기 클릭")
+        return True
+    except Exception as e:
+        log(f"결제하기 클릭 실패: {type(e).__name__}")
+        return False
+    
+def auto_select_and_pay(targets) -> tuple:
+    """
+    targets: pairs ['F12+F13', ...] 또는 seats 리스트
+    반환: (성공여부: bool, 상세메시지: str)
+    """
+    if not targets:
+        return False, "타겟 좌석 없음"
+
+    clicked = None
+
+    if REQUIRE_PAIR:
+        for p in targets:
+            if click_seat_pair(p):
+                clicked = p
+                break
+            # fallback: 짝 좌석을 각각 클릭
+            parts = p.split("+")
+            if len(parts) == 2:
+                ok1 = click_seat_pair(parts[0].strip())
+                ok2 = click_seat_pair(parts[1].strip())
+                if ok1 or ok2:
+                    clicked = p
+                    break
+    else:
+        # 단석: seat 라벨 또는 dict
+        for s in targets:
+            label = s["seat"] if isinstance(s, dict) else str(s)
+            if click_seat_pair(label):  # split('+')[0]만 쓰이므로 단석도 동작
+                clicked = label
+                break
+
+    if not clicked:
+        return False, "좌석 버튼 클릭 실패 (이미 매진이거나 DOM 불일치)"
+
+    time.sleep(0.5)
+
+    if not click_select_complete():
+        return False, f"{clicked} 선택 후 '선택완료' 실패 (수동 진행)"
+
+    time.sleep(0.8)
+
+    if not click_pay_button():
+        return False, f"{clicked} 선택완료 OK, '결제하기' 실패 (수동 진행)"
+
+    return True, f"{clicked} → 선택완료 → 결제하기 진입 성공"
 
 def select_people():
     """버튼으로 직접 부를 때 (감시 전 미리 눌러두는 용도)."""
@@ -447,25 +735,32 @@ def show_popup(count: int, pairs):
 
 
 def announce(seats, pairs, attempt):
-    """모드에 따라 알리는 방식을 나눈다."""
-    global last_push
     text = build_alert_text(seats, pairs, attempt)
-    bring_browser_front()
+    global popup_shown, last_push
 
     if mode_var.get() == "web":
-        # 새로고침을 더 돌리면 인원 선택이 초기화되므로 감시를 멈추고 화면을 준비해둔다.
-        # 좌석 클릭과 결제는 사람이 직접 한다.
         monitoring.clear()
-        set_status(f"★ 2연석 {len(pairs)}쌍 — 좌석 화면 준비 중...")
-        if open_seat_screen():
-            log("좌석 화면까지 준비 완료 — 좌석 선택은 직접 해주세요.")
-            set_status(f"★ 2연석 {len(pairs)}쌍 — 좌석을 골라 예매하세요.")
-        show_popup(len(pairs), pairs)
-        if last_push == 0:
-            notify_phone("CGV seat open!", text)
-            last_push = time.time()
+        log("웹모드: 자동 선택·결제 진입 시도")
+
+        if not open_seat_screen():
+            notify_phone("CGV 실패", "좌석 화면 진입 실패\n" + text)
+            bring_browser_front()
+            return
+
+        targets = pairs if REQUIRE_PAIR else seats
+        ok, detail = auto_select_and_pay(targets)
+
+        notify_phone(
+            "CGV 좌석 확보 시도" if ok else "CGV 수동 필요",
+            text + "\n\n" + detail,
+        )
+        bring_browser_front()
+        if not popup_shown:
+            popup_shown = True
+            show_popup(len(seats), pairs)
+        last_push = time.time()
     else:
-        # 외출 모드 — 화면은 건드리지 않고, 확인할 때마다 폰으로 계속
+        # 외출모드: 알림만 (자동 클릭 안 함)
         notify_phone("CGV seat open!", text)
         last_push = time.time()
 
@@ -495,20 +790,25 @@ def monitor_loop():
                 break
 
             rows = wait_for_fresh_data()
-            log(f"[{attempt}회] 새로고침 → 응답 {time.time() - t0:.1f}초")
+            took = time.time() - t0
 
             if rows is None:
-                log("  → 좌석 응답 아직 없음 (후킹 확인 필요)")
+                log(f"[{attempt}회] 좌석 응답 없음 (후킹 확인 필요) · {took:.1f}s", stamp=False)
                 set_status("좌석 데이터 대기 중...")
             else:
+                light = sum(1 for r in rows if r["zone"] in EXCLUDE_ZONES)
                 seats = [r for r in rows if in_target(r)]
                 pairs = find_adjacent_pairs(seats)
-                log(f"  → 타겟 {len(seats)}석 / 2연석 {len(pairs)}쌍")
+
+                # 사이클마다 한 줄만 남긴다 (시각은 반복돼서 빼고, 회차로 구분)
+                log(f"[{attempt}회] 전체 {len(rows)}석 · Light존 {light} · "
+                    f"타겟 {len(seats)}석 · 2연석 {len(pairs)}쌍 · {took:.1f}s",
+                    stamp=False)
 
                 hit = pairs if REQUIRE_PAIR else seats
                 if hit:
-                    log(f"  ★ 좌석: {', '.join(s['seat'] for s in seats)}")
-                    log(f"  ★ 2연석: {', '.join(pairs) if pairs else '없음'}")
+                    log(f"★ 좌석: {', '.join(s['seat'] for s in seats)}")
+                    log(f"★ 2연석: {', '.join(pairs) if pairs else '없음'}")
                     set_status(f"★ 2연석 {len(pairs)}쌍 — 예매하세요!")
                     announce(seats, pairs, attempt)
                     if not monitoring.is_set():
@@ -816,9 +1116,12 @@ def set_status(text: str):
     status_var.set(text)
 
 
-def log(text: str):
-    """하단 로그창에 시각과 함께 한 줄 남긴다 (UI 스레드에서 실행)."""
-    line = f"[{time.strftime('%H:%M:%S')}] {text}\n"
+def log(text: str, stamp: bool = True):
+    """하단 로그창에 한 줄 남긴다 (UI 스레드에서 실행).
+
+    매 사이클 반복되는 줄은 시각이 의미 없어서 stamp=False로 회차만 남긴다.
+    """
+    line = (f"[{time.strftime('%H:%M:%S')}] {text}\n" if stamp else f"{text}\n")
 
     recent_log.append(line.rstrip())
     del recent_log[:-200]  # 원격 조회용으로 최근 것만 들고 있는다
@@ -871,6 +1174,14 @@ btn_stop.pack(pady=5)
 
 btn_test_push = tk.Button(root, text="폰 알림 테스트", width=20, command=send_test_push)
 btn_test_push.pack(pady=5)
+
+btn_test_auto = tk.Button(
+    root,
+    text="좌석맵 자동선택 테스트 (A17)",
+    width=28,
+    command=test_auto_select_now,
+)
+btn_test_auto.pack(pady=5)
 
 btn_chat_id = tk.Button(root, text="텔레그램 chat_id 찾기", width=20, command=find_telegram_chat_id)
 btn_chat_id.pack(pady=5)
