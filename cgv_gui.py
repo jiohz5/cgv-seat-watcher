@@ -308,38 +308,11 @@ def open_seat_screen() -> bool:
             "선택",
             timeout=8,
         )
-        ...
+        
         return True
     except Exception:
         return False
 
-def click_seat_pair(pair_label: str) -> bool:
-    """
-    'A17+A18' → 첫 칸(A17) 클릭.
-    일반석: 한 번에 2연석 선택될 수 있음.
-    장애인/우대석: 클릭 후 확인 팝업이 뜸 (다음 함수에서 처리).
-    """
-    first = pair_label.split("+")[0].strip()
-    xpath = (
-        f'//button[contains(@class,"seatMap_seatNumber") '
-        f'and not(@disabled) '
-        f'and not(contains(@class,"Disabled"))]'
-        f'//span[normalize-space()="{first}"]/parent::button'
-    )
-    try:
-        el = WebDriverWait(driver, 5).until(
-            EC.element_to_be_clickable((By.XPATH, xpath))
-        )
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block:'center'});", el
-        )
-        time.sleep(0.2)
-        el.click()
-        log(f"좌석 클릭: {first} ({pair_label})")
-        return True
-    except Exception as e:
-        log(f"좌석 클릭 실패 ({first}): {type(e).__name__}")
-        return False
 
 def dismiss_preferential_popup(timeout: float = 3.0) -> bool:
     """
@@ -552,52 +525,65 @@ def wait_secure_keyboard(timeout: float = 20.0) -> bool:
     log("보안키패드 대기 타임아웃")
     return False   
 
-def auto_select_and_pay(targets, treat_as_preferential: bool = False) -> tuple:
+def auto_select_and_pay(targets, treat_as_preferential: bool = None) -> tuple:
     """
-    targets: ['A17+A18'] 형식
-    treat_as_preferential=True → 클릭마다 확인 팝업 대기 (장애인/우대 테스트용)
+    targets: ['F12+F13', ...] 또는 감시에서 넘긴 pairs
+    treat_as_preferential:
+      None  → 첫 좌석 DOM으로 자동 판별
+      True  → 우대석(칸마다 클릭 + 확인 팝업)
+      False → 일반석(첫 칸 한 번, 팝업 짧게만)
     """
     if not targets:
         return False, "타겟 없음"
 
-    pair = targets[0]
+    raw = targets[0]
+    if isinstance(raw, dict):
+        pair = raw.get("seat", str(raw))
+    else:
+        pair = str(raw)
+
     parts = [p.strip() for p in pair.split("+")]
     first = parts[0]
     second = parts[1] if len(parts) > 1 else None
 
+    if treat_as_preferential is None:
+        treat_as_preferential = is_preferential_seat(first)
+        log(f"좌석 유형: {'우대/장애인' if treat_as_preferential else '일반'} ({first})")
+
     # 1) 첫 좌석
-    if not click_seat_pair(first):
-        return False, f"{first} 클릭 실패 (매진/disabled/DOM)"
+    if not click_seat_pair(first if treat_as_preferential else pair):
+        # 일반석도 라벨이 F12+F13이면 click_seat_pair가 첫 칸만 씀
+        if not click_seat_pair(first):
+            return False, f"{first} 클릭 실패 (매진/disabled/DOM)"
 
     if treat_as_preferential:
         dismiss_preferential_popup()
     else:
-        # 일반석: 팝업 없을 수 있음. 짧게만 시도
         dismiss_preferential_popup(timeout=1.0)
 
     time.sleep(0.4)
 
-    # 2) 장애인석은 두 번째 칸도 눌러야 할 수 있음
+    # 2) 우대석만 두 번째 칸
     if second and treat_as_preferential:
         if click_seat_pair(second):
             dismiss_preferential_popup()
             time.sleep(0.3)
         else:
-            log(f"{second} 추가 클릭 실패 — 이미 짝 선택됐을 수 있음")
+            log(f"{second} 추가 클릭 실패 — 이미 선택됐을 수 있음")
 
     # 3) 선택완료
     if not click_select_complete():
         return False, f"{pair} 선택 후 '선택완료' 실패"
 
-    time.sleep(0.8)
+    time.sleep(1.0)
 
-    # 4) 결제하기
+    # 4) 1차 결제하기
     if not click_pay_button():
         return False, f"{pair} 선택완료 OK, '결제하기' 실패 (수동)"
 
     time.sleep(1.0)
 
-    # --- 결제 화면 이후 ---
+    # 5) 2차 결제하기
     if not click_second_pay_button():
         return False, "1차 결제하기 OK, 2차 결제하기 실패 (수동)"
 
@@ -621,18 +607,47 @@ def auto_select_and_pay(targets, treat_as_preferential: bool = False) -> tuple:
     if not click_npay_agree_and_pay():
         return False, "금액 결제 OK, 동의하고 결제하기 실패 (수동)"
 
-    # 6자리: 자동 입력 안 함
-    if wait_secure_keyboard():
-        try:
-            notify_phone(
-                "CGV 6자리 입력 필요",
-                f"{pair}까지 자동 완료. 보안키패드에서 비밀번호 6자리를 직접 입력하세요.",
-            )
-        except Exception:
-            pass
+    # 6) 키패드 — PIN 자동 입력 없음, 알림 10회
+    keyboard_ok = wait_secure_keyboard()
+    title = "CGV Npay 결제 대기"
+    if keyboard_ok:
+        body = (
+            f"{pair} 자동 진행 완료.\n"
+            f"Npay 보안키패드(6자리) 창이 떠 있습니다.\n"
+            f"원격 데스크톱으로 PIN 입력 후 결제를 완료해 주세요.\n"
+            f"시간: {time.strftime('%H:%M:%S')}"
+        )
+        detail = f"{pair} → Npay 결제 완료 대기 중 (키패드 표시됨)"
+    else:
+        body = (
+            f"{pair} '동의하고 결제하기'까지 완료.\n"
+            f"키패드 미감지 — 브라우저 화면을 확인해 주세요.\n"
+            f"시간: {time.strftime('%H:%M:%S')}"
+        )
+        detail = f"{pair} → 결제 직전 OK (키패드 미감지)"
+
+    notify_phone_repeat(title, body, times=10, interval_sec=3.0)
+
+    try:
         bring_browser_front()
-        return True, f"{pair} → 결제 직전 OK. 6자리는 직접 입력"
-    return True, f"{pair} → 동의하고 결제까지 OK (키패드 미감지, 화면 확인)"
+    except Exception:
+        pass
+
+    return True, detail
+
+def notify_phone_repeat(title: str, message: str, times: int = 10, interval_sec: float = 3.0):
+    """같은 알림을 여러 번 보내 외출 중에도 인지하기 쉽게 한다."""
+    def task():
+        for i in range(times):
+            try:
+                notify_phone(title, f"[{i + 1}/{times}]\n{message}")
+                log(f"알림 전송 {i + 1}/{times}")
+            except Exception as e:
+                log(f"알림 실패 {i + 1}/{times}: {type(e).__name__}")
+            if i + 1 < times:
+                time.sleep(interval_sec)
+
+    threading.Thread(target=task, daemon=True).start()
 
 def test_full_flow_like_watch():
     """
@@ -735,6 +750,21 @@ def click_seat_pair(pair_label: str) -> bool:
             pass
         return False
     
+def is_preferential_seat(seat_label: str) -> bool:
+    """좌석 버튼 class에 Preferential 등이 있으면 우대/장애인석."""
+    xpath = (
+        f'//button[contains(@class,"seatMap_seatNumber")]'
+        f'//span[normalize-space()="{seat_label}"]/parent::button'
+    )
+    try:
+        btns = driver.find_elements(By.XPATH, xpath)
+        for b in btns:
+            cls = (b.get_attribute("class") or "")
+            if "Preferential" in cls or "preferential" in cls:
+                return True
+    except Exception:
+        pass
+    return False
 
 def click_pay_button() -> bool:
     """
@@ -922,37 +952,69 @@ def show_popup(count: int, pairs):
 
     root.after(0, open_it)
 
-
 def announce(seats, pairs, attempt):
+    """타겟 2연석 발견 시: 감시 중지 → 인원/좌석/결제 → Npay 키패드 대기 알림."""
     text = build_alert_text(seats, pairs, attempt)
     global popup_shown, last_push
 
-    if mode_var.get() == "web":
-        monitoring.clear()
-        log("웹모드: 자동 선택·결제 진입 시도")
+    # 실시간 감시 중지 (중복 진입 방지)
+    monitoring.clear()
+    log("타겟 2연석 확보 — 감시 중지, 자동 예매 진행")
 
-        if not open_seat_screen():
-            notify_phone("CGV 실패", "좌석 화면 진입 실패\n" + text)
+    targets = pairs if REQUIRE_PAIR else [
+        s["seat"] if isinstance(s, dict) else str(s) for s in seats
+    ]
+    if not targets:
+        log("타겟 목록이 비어 있음")
+        notify_phone("CGV 수동 필요", text + "\n\n타겟 목록 없음")
+        last_push = time.time()
+        return
+
+    if not open_seat_screen():
+        msg = "좌석 화면 진입 실패 (인원/선택)"
+        log(msg)
+        notify_phone("CGV 실패", text + "\n\n" + msg)
+        try:
             bring_browser_front()
-            return
+        except Exception:
+            pass
+        last_push = time.time()
+        return
 
-        targets = pairs if REQUIRE_PAIR else seats
-        ok, detail = auto_select_and_pay(targets)
+    time.sleep(1.0)  # 좌석 맵 렌더
 
-        notify_phone(
-            "CGV 좌석 확보 시도" if ok else "CGV 수동 필요",
+    # treat_as_preferential=None → DOM 자동 판별
+    ok, detail = auto_select_and_pay(targets, treat_as_preferential=None)
+
+    log(f"자동 예매 결과: {'성공' if ok else '실패'} — {detail}")
+    # 키패드 구간에서 이미 10회 알림을 보냄.
+    # 실패 시에만 추가 알림
+    if not ok:
+        notify_phone_repeat(
+            "CGV 수동 필요",
             text + "\n\n" + detail,
+            times=10,
+            interval_sec=3.0,
         )
-        bring_browser_front()
-        if not popup_shown:
-            popup_shown = True
-            show_popup(len(seats), pairs)
-        last_push = time.time()
     else:
-        # 외출모드: 알림만 (자동 클릭 안 함)
-        notify_phone("CGV seat open!", text)
-        last_push = time.time()
+        # 좌석 요약은 1회만 추가로 (선택)
+        try:
+            notify_phone("CGV 자동 진행 완료", text + "\n\n" + detail)
+        except Exception:
+            pass
 
+    try:
+        bring_browser_front()
+    except Exception:
+        pass
+
+    if not popup_shown:
+        try:
+            show_popup(len(seats), pairs)
+        except Exception:
+            pass
+
+    last_push = time.time()
 
 def monitor_loop():
     attempt = 0
