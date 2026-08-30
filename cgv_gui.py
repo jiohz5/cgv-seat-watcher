@@ -18,6 +18,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
+try:
+    import pytesseract
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+except Exception:
+    pass
+
 LOGIN_URL = "https://cgv.co.kr/mem/login?returnUrl=/mcv/mobileTicketList"
 BOOK_URL = "https://cgv.co.kr/cnm/movieBook/movie"
 
@@ -31,8 +37,8 @@ PEOPLE_COUNT = 2
 # 타겟 범위: G~J열 13~30번 중 2연석만. GUI/텔레그램에서 변경 예정.
 EXCLUDE_ZONES = {"Light존"}
 TARGET_ROWS = {"G", "H", "I", "J"}
-SEAT_NO_MIN = 13
-SEAT_NO_MAX = 30
+SEAT_NO_MIN = 17
+SEAT_NO_MAX = 26
 REQUIRE_PAIR = True
 CHECK_INTERVAL_SEC = 1
 MAX_CONSECUTIVE_FAILS = 5
@@ -998,72 +1004,136 @@ def switch_to_npay_keyboard() -> bool:
     return has_kb()
 
 
-def _ocr_digit(img):
-    """한 칸 이미지에서 숫자 1개. pytesseract 필요."""
+def _ocr_digit_votes(img):
     try:
         import pytesseract
         from PIL import ImageOps, ImageFilter
     except Exception:
-        return ""
-    g = ImageOps.grayscale(img)
-    g = g.resize((g.width * 4, g.height * 4))
-    g = ImageOps.autocontrast(g)
-    g = g.point(lambda p: 255 if p > 140 else 0)
-    g = g.filter(ImageFilter.SHARPEN)
-    cfg = "--psm 10 -c tessedit_char_whitelist=0123456789"
-    try:
-        txt = pytesseract.image_to_string(g, config=cfg) or ""
-    except Exception:
-        txt = ""
-    digits = re.sub(r"\D", "", txt)
-    return digits[:1]
+        return {}
+
+    def run(im, psm):
+        cfg = f"--psm {psm} -c tessedit_char_whitelist=0123456789"
+        try:
+            txt = pytesseract.image_to_string(im, config=cfg) or ""
+        except Exception:
+            return ""
+        digits = re.sub(r"\D", "", txt)
+        return digits[:1]
+
+    base = ImageOps.grayscale(img)
+    w, h = max(base.width, 1), max(base.height, 1)
+    pad = max(3, min(w, h) // 8)
+    if w > pad * 2 and h > pad * 2:
+        base = base.crop((pad, pad, w - pad, h - pad))
+    big = base.resize((max(100, base.width * 6), max(130, base.height * 6)))
+    big = ImageOps.autocontrast(big)
+    variants = [big, ImageOps.invert(big)]
+    for thr in (80, 100, 120, 140, 160, 180):
+        variants.append(big.point(lambda p, t=thr: 255 if p > t else 0))
+        variants.append(ImageOps.invert(big).point(lambda p, t=thr: 255 if p > t else 0))
+
+    votes = {}
+    for im in variants:
+        im = im.filter(ImageFilter.SHARPEN)
+        for psm in (10, 8, 7, 13):
+            d = run(im, psm)
+            if d:
+                votes[d] = votes.get(d, 0) + 1
+    return votes
+
+
+def _assign_unique_digits(vote_map):
+    remaining = set("0123456789")
+    assigned = {}
+    cells = list(vote_map.keys())
+    while cells and remaining:
+        best_cell, best_d, best_s = None, None, -1
+        for pos in cells:
+            for d, s in (vote_map.get(pos) or {}).items():
+                if d in remaining and s > best_s:
+                    best_cell, best_d, best_s = pos, d, s
+        if not best_cell:
+            break
+        assigned[best_cell] = best_d
+        remaining.discard(best_d)
+        cells.remove(best_cell)
+    for pos in vote_map:
+        if pos not in assigned and remaining:
+            assigned[pos] = remaining.pop()
+    return assigned
+
+
+def _confidence(votes):
+    if not votes:
+        return "", 0, 0
+    ranked = sorted(votes.items(), key=lambda x: -x[1])
+    top_d, top_s = ranked[0]
+    second = ranked[1][1] if len(ranked) > 1 else 0
+    return top_d, top_s, top_s - second
 
 
 def read_npay_sprite_map():
-    """
-    스프라이트 한 장을 잘라 칸→숫자 맵을 만든다.
-    반환: {'1-1':'9', '1-2':'1', ...}
-    """
+    """각 숫자 버튼을 화면 캡처한 뒤 OCR. 확신 낮은 칸은 비운다."""
     from PIL import Image
 
-    data = driver.execute_script("""
-        var el = document.querySelector('[class*="SecureKeyboard_number"]');
-        if (!el) return null;
-        var st = el.getAttribute('style') || '';
-        var m = st.match(/base64,([A-Za-z0-9+/=]+)/);
-        if (m) return m[1];
-        var cs = getComputedStyle(el).backgroundImage || '';
-        m = cs.match(/base64,([A-Za-z0-9+/=]+)/);
-        return m ? m[1] : null;
-    """)
-    if not data:
-        log("PIN OCR: 스프라이트 base64 없음")
-        return {}
-
-    raw = base64.b64decode(data)
-    img = Image.open(io.BytesIO(raw)).convert("RGB")
-    cw, ch = img.width / 3.0, img.height / 4.0
-    cells = [
-        ("1-1", 0, 0), ("1-2", 1, 0), ("1-3", 2, 0),
-        ("2-1", 0, 1), ("2-2", 1, 1), ("2-3", 2, 1),
-        ("3-1", 0, 2), ("3-2", 1, 2), ("3-3", 2, 2),
-        ("4-2", 1, 3),
-    ]
     debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pin_ocr_debug")
     os.makedirs(debug_dir, exist_ok=True)
-    img.save(os.path.join(debug_dir, "sprite.png"))
+    try:
+        driver.get_screenshot_as_file(os.path.join(debug_dir, "keypad_full.png"))
+    except Exception:
+        pass
 
-    mapping = {}
-    for pos, col, row in cells:
-        box = (
-            int(col * cw), int(row * ch),
-            int((col + 1) * cw), int((row + 1) * ch),
-        )
-        crop = img.crop(box)
+    cells = ["1-1", "1-2", "1-3", "2-1", "2-2", "2-3", "3-1", "3-2", "3-3", "4-2"]
+    confident = {}
+    for pos in cells:
+        el = None
+        try:
+            found = driver.find_elements(
+                By.CSS_SELECTOR, f'[class*="SecureKeyboard_key-{pos}"]'
+            )
+            if not found:
+                found = driver.find_elements(By.CSS_SELECTOR, f'[class*="key-{pos}"]')
+            if found:
+                el = found[0]
+                try:
+                    el = el.find_element(By.XPATH, "./ancestor-or-self::button[1]")
+                except Exception:
+                    pass
+        except Exception:
+            el = None
+        if el is None:
+            log(f"PIN OCR {pos} 버튼 없음")
+            continue
+        try:
+            crop = Image.open(io.BytesIO(el.screenshot_as_png)).convert("RGB")
+        except Exception as e:
+            log(f"PIN OCR {pos} 캡처 실패: {type(e).__name__}")
+            continue
         crop.save(os.path.join(debug_dir, f"{pos}.png"))
-        d = _ocr_digit(crop)
+        votes = _ocr_digit_votes(crop)
+        top_d, top_s, gap = _confidence(votes)
+        ok = bool(top_d) and top_s >= 4 and gap >= 2
+        log(
+            f"PIN OCR {pos} raw='{top_d or '?'}' conf={top_s}/{gap} "
+            f"votes={votes} {'OK' if ok else 'LOW'}"
+        )
+        if ok:
+            confident[pos] = top_d
+        time.sleep(0.08)
+
+    used = {}
+    mapping = {}
+    for pos, d in confident.items():
+        if d in used:
+            log(f"PIN OCR 중복 숫자 보류 (칸 {used[d]}, {pos})")
+            mapping.pop(used[d], None)
+            continue
         mapping[pos] = d
-        log(f"PIN OCR {pos} → '{d or '?'}'")
+        used[d] = pos
+    leftovers = [p for p in cells if p not in mapping]
+    if leftovers:
+        log(f"PIN OCR 미확정 칸 {leftovers} — 추측하지 않음")
+    log(f"PIN OCR 확정: {mapping}")
     return mapping
 
 
@@ -1102,17 +1172,18 @@ def enter_npay_pin(pin: str = None) -> bool:
     mapping = read_npay_sprite_map()
     found = [v for v in mapping.values() if v]
     log(f"PIN OCR 인식 {len(found)}/10: {mapping}")
-    if len(set(found)) < 8:
-        log("PIN OCR: 인식 부족 — 수동 입력. pin_ocr_debug 폴더 확인")
-        return False
     digit_to_pos = {}
     for pos, d in mapping.items():
         if d and d not in digit_to_pos:
             digit_to_pos[d] = pos
+    missing = [ch for ch in pin if ch not in digit_to_pos]
+    if missing:
+        log(f"PIN OCR: 필요한 숫자 {len(missing)}개 미인식 — 수동. pin_ocr_debug 확인")
+        return False
     for ch in pin:
         pos = digit_to_pos.get(ch)
         if not pos:
-            log(f"PIN OCR: '{ch}' 칸을 못 찾음")
+            log("PIN OCR: 칸 매핑 실패")
             return False
         if not click_npay_key(pos):
             log(f"PIN OCR: {pos} 클릭 실패")
